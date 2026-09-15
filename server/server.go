@@ -379,7 +379,7 @@ func (h *Hub) resolveEventResources(ctx context.Context, event uvim.Event) uvim.
 	for i, ref := range event.Message.Resources {
 		ref.Provider = uvim.FirstNonEmpty(ref.Provider, event.Provider)
 		ref.Connector = uvim.FirstNonEmpty(ref.Connector, event.Connector)
-		if provider != nil && provider.Capabilities().DownloadResource && ref.InternalURL == "" {
+		if provider != nil && provider.Capabilities().DownloadResource && ref.InternalURL == "" && ref.Error == "" {
 			downloaded, err := provider.Download(ctx, uvim.ResourceDownloadRequest{
 				Resource: ref,
 				Message:  event.Message,
