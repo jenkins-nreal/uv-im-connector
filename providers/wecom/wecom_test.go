@@ -66,7 +66,11 @@ func TestInboundAttachmentsReachCaller(t *testing.T) {
 						t.Fatal(err)
 					}
 					event, ok := provider.decodeMessage(frame{Cmd: cmdCallback, Headers: headers{ReqID: "request-1"}, Body: body})
-					if !ok || !event.Addressed || len(event.Message.Resources) != 1 {
+					wantResources := 1
+					if quoted && kind == "mixed" {
+						wantResources = 2
+					}
+					if !ok || !event.Addressed || len(event.Message.Resources) != wantResources {
 						t.Fatalf("decoded ok=%t addressed=%t resources=%d", ok, event.Addressed, len(event.Message.Resources))
 					}
 					wantChannel, wantTarget := uvim.ChannelDirect, uvim.TargetUser
@@ -107,6 +111,51 @@ func TestInboundAttachmentsReachCaller(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+func TestDecodeMessagePreservesQuotedTextAsContextResource(t *testing.T) {
+	store := &uvim.ResourceStore{Dir: t.TempDir()}
+	provider, err := New(Config{BotID: "bot", Secret: "secret", ResourceStore: store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event, ok := provider.decodeMessage(frame{Cmd: cmdCallback, Headers: headers{ReqID: "req-1"}, Body: map[string]any{
+		"msgid":    "msg-1",
+		"msgtype":  "text",
+		"chattype": "group",
+		"chatid":   "chat-1",
+		"from":     map[string]any{"userid": "u1"},
+		"text":     map[string]any{"content": "analyze this"},
+		"quote": map[string]any{
+			"msgtype": "text",
+			"text":    map[string]any{"content": "quoted context"},
+		},
+	}})
+	if !ok {
+		t.Fatal("decode ok = false")
+	}
+	if event.Message.Text != "analyze this" {
+		t.Fatalf("message text = %q", event.Message.Text)
+	}
+	if len(event.Message.Resources) != 1 {
+		t.Fatalf("resources = %+v", event.Message.Resources)
+	}
+	ref := event.Message.Resources[0]
+	if ref.Name != "quoted-message.txt" || ref.InternalURL == "" || ref.Error != "" {
+		t.Fatalf("quote resource = %+v", ref)
+	}
+	file, _, err := store.Open(ref.InternalURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	raw, err := io.ReadAll(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "quoted context") {
+		t.Fatalf("quote body = %q", raw)
 	}
 }
 

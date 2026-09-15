@@ -596,7 +596,11 @@ func (p *Provider) decodeMessage(in frame) (uvim.Event, bool) {
 	text := p.messageText(body, msgType)
 	resources := p.messageResources(body, msgType)
 	if quote := uvim.MapStringAny(body["quote"]); len(quote) > 0 {
-		resources = append(resources, p.messageResources(quote, uvim.StringValue(quote["msgtype"]))...)
+		quoteType := uvim.StringValue(quote["msgtype"])
+		resources = append(resources, p.messageResources(quote, quoteType)...)
+		if quoteText := quotedMessageText(quote, quoteType); quoteText != "" {
+			resources = append(resources, p.quotedTextResource(quoteType, quoteText))
+		}
 	}
 	if strings.TrimSpace(text) == "" && len(resources) == 0 {
 		return uvim.Event{}, false
@@ -638,6 +642,55 @@ func (p *Provider) decodeMessage(in frame) (uvim.Event, bool) {
 		// AI Bot callbacks are interactions delivered to this bot, including group @mentions.
 		Addressed: true,
 	}, true
+}
+
+func quotedMessageText(body map[string]any, msgType string) string {
+	switch msgType {
+	case "text":
+		return strings.TrimSpace(uvim.StringValue(uvim.MapStringAny(body["text"])["content"]))
+	case "voice":
+		return strings.TrimSpace(uvim.StringValue(uvim.MapStringAny(body["voice"])["content"]))
+	case "mixed":
+		items, _ := uvim.MapStringAny(body["mixed"])["msg_item"].([]any)
+		var parts []string
+		for _, itemValue := range items {
+			item := uvim.MapStringAny(itemValue)
+			switch uvim.StringValue(item["msgtype"]) {
+			case "text":
+				if content := strings.TrimSpace(uvim.StringValue(uvim.MapStringAny(item["text"])["content"])); content != "" {
+					parts = append(parts, content)
+				}
+			case "voice":
+				if content := strings.TrimSpace(uvim.StringValue(uvim.MapStringAny(item["voice"])["content"])); content != "" {
+					parts = append(parts, content)
+				}
+			}
+		}
+		return strings.Join(parts, "\n")
+	default:
+		return ""
+	}
+}
+
+func (p *Provider) quotedTextResource(msgType, text string) uvim.ResourceRef {
+	ref := uvim.ResourceRef{
+		Provider:  p.ID(),
+		Connector: p.ConnectorID(),
+		Kind:      uvim.ElementFile,
+		Name:      "quoted-message.txt",
+		MIME:      "text/plain; charset=utf-8",
+	}
+	if p.config.ResourceStore == nil {
+		ref.Error = "quoted_message_context_store_unavailable"
+		return ref
+	}
+	body := fmt.Sprintf("Message type: %s\n\n%s\n", uvim.FirstNonEmpty(msgType, "text"), text)
+	saved, err := p.config.ResourceStore.Save(context.Background(), strings.NewReader(body), ref)
+	if err != nil {
+		ref.Error = "quoted_message_context_store_failed"
+		return ref
+	}
+	return saved
 }
 
 func (p *Provider) messageText(body map[string]any, msgType string) string {

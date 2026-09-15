@@ -419,6 +419,52 @@ func TestDecodePayloadFileResource(t *testing.T) {
 	}
 }
 
+func TestDecodePayloadCoversAdditionalMessageTypes(t *testing.T) {
+	tests := []struct {
+		name        string
+		messageType string
+		content     string
+		wantText    string
+		wantKind    string
+		wantKey     string
+	}{
+		{name: "sticker", messageType: "sticker", content: `{"file_key":"sticker-1"}`, wantText: "[Sticker]"},
+		{name: "interactive", messageType: "interactive", content: `{}`, wantText: "[Interactive card]"},
+		{name: "shared chat", messageType: "share_chat", content: `{"chat_id":"chat-1"}`, wantText: "[Shared chat: chat-1]"},
+		{name: "shared user", messageType: "share_user", content: `{"user_id":"user-1"}`, wantText: "[Shared user: user-1]"},
+		{name: "system", messageType: "system", content: `{}`, wantText: "[System message]"},
+		{name: "forwarded", messageType: "merge_forward", content: `{}`, wantText: "[forwarded messages]"},
+		{name: "unknown", messageType: "future_type", content: `{}`, wantText: "[Unsupported message: future_type]"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			raw, err := json.Marshal(map[string]any{
+				"header": map[string]any{"event_id": "evt-1", "event_type": "im.message.receive_v1"},
+				"event": map[string]any{"message": map[string]any{
+					"message_id": "msg-1", "chat_id": "chat-1", "chat_type": "p2p",
+					"message_type": tt.messageType, "content": tt.content,
+				}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, ok, err := DecodePayload(raw, DecoderConfig{})
+			if err != nil || !ok {
+				t.Fatalf("decode ok=%t err=%v", ok, err)
+			}
+			if got.Message.Text != tt.wantText {
+				t.Fatalf("text = %q, want %q", got.Message.Text, tt.wantText)
+			}
+			if tt.wantKind == "" {
+				return
+			}
+			if len(got.Message.Resources) != 1 || got.Message.Resources[0].Kind != tt.wantKind || got.Message.Resources[0].Key != tt.wantKey {
+				t.Fatalf("resources = %+v", got.Message.Resources)
+			}
+		})
+	}
+}
+
 func TestFrameRoundTrip(t *testing.T) {
 	in := &wsFrame{SeqID: 1, Service: 2, Method: frameMethodData, Headers: []frameHeader{{Key: "message_id", Value: "m1"}}, Payload: []byte("payload")}
 	out, err := unmarshalFrame(in.marshal())

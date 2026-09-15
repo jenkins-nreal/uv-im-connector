@@ -198,6 +198,7 @@ func (p *Provider) Run(ctx context.Context, sink uvim.EventSink) error {
 					return
 				}
 				p.enrichEventDisplayNames(runCtx, &event)
+				p.enrichQuotedMessage(runCtx, &event)
 				if err := sink.Emit(runCtx, event); err != nil {
 					emitErr <- err
 					return
@@ -665,7 +666,7 @@ func (p *Provider) Download(ctx context.Context, req uvim.ResourceDownloadReques
 	if strings.TrimSpace(ref.Key) == "" {
 		return ref, fmt.Errorf("lark download: resource key is required")
 	}
-	messageID := uvim.FirstNonEmpty(req.Event.Message.ID, req.Message.ID, ref.Metadata["message_id"])
+	messageID := uvim.FirstNonEmpty(ref.Metadata["message_id"], req.Event.Message.ID, req.Message.ID)
 	if strings.TrimSpace(messageID) == "" {
 		return ref, fmt.Errorf("lark download: message id is required")
 	}

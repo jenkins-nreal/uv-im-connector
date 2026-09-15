@@ -32,6 +32,34 @@ jarvis-box owns:
 7. jarvis-box sends final replies through `POST /v1/message.create`.
 8. On failure, jarvis-box persists the normalized `failure`, applies its own bounded retry policy, and keeps delivery state separate from agent Run state.
 
+### Quoted Lark messages
+
+For an addressed Lark message with a parent message ID, the connector reads that
+one parent with its bot identity and verifies the returned message and chat IDs.
+It exposes the quoted text and source ID as a `quoted-message.txt` resource, and
+adds the parent's files to the same resource list. File downloads use each
+resource's source message ID. The current command text, addressing decision and
+reply target are unchanged; quoted text is reference material, not a new command.
+The connector does not walk the root/thread history or recursively fetch quotes.
+
+An unavailable, deleted or inaccessible parent produces a resource with a
+normalized `quoted_message_*` error; a file download failure remains
+`download_failed`. Consumers must preserve these errors in the Agent input rather
+than reporting that the user supplied no attachment. Existing clients can consume
+this through the resource protocol without gaining provider credentials.
+
+Lark `folder` messages are recognized as file resources, including when quoted.
+Recognition does not guarantee that Lark's resource API can download the folder.
+If it fails, the context identifies the original folder and asks for a ZIP archive
+or individual files. Do not claim that folder contents were retrieved based only
+on its metadata or a successful local transport stub.
+
+Quoted `merge_forward` responses may contain the parent and its child messages;
+the connector selects the requested parent and keeps the forwarded message
+context available. Lark's resource API does not support merge-forward messages
+(including child messages) or `interactive` message cards, so those messages
+provide text/summary context but do not expose child resources.
+
 ## Release Boundary
 
 jarvis-box does not host, spawn, or auto-update `uv-im-connector`. A connector bugfix that keeps `protocol_version` compatible is deployed by upgrading the connector service. jarvis-box needs a dependency bump and release only when it consumes new Go client/API behavior or when the connector protocol becomes incompatible with the supported protocol set.

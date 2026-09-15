@@ -32,6 +32,7 @@ func New(config Config) (*Provider, error) {
 	if baseURL == "" {
 		baseURL = "https://oapi.dingtalk.com"
 	}
+	config.BaseURL = baseURL
 	base, err := httpchannel.New(httpchannel.Config{
 		ProviderID:        "dingtalk",
 		ConnectorID:       firstNonEmpty(config.ConnectorID, "dingtalk"),
@@ -42,14 +43,15 @@ func New(config Config) (*Provider, error) {
 		Send:              Send,
 		ParseSendResponse: ParseSendResponse,
 		Capabilities: uvim.Capabilities{
-			Inbound:        true,
-			Outbound:       true,
-			DirectMessage:  true,
-			GroupMessage:   true,
-			ReplyMessage:   true,
-			ProactiveGroup: true,
-			TargetKinds:    []string{uvim.TargetUser, uvim.TargetGroup},
-			ChannelTypes:   []string{uvim.ChannelDirect, uvim.ChannelGroup},
+			Inbound:          true,
+			Outbound:         true,
+			DirectMessage:    true,
+			GroupMessage:     true,
+			ReplyMessage:     true,
+			ProactiveGroup:   true,
+			DownloadResource: true,
+			TargetKinds:      []string{uvim.TargetUser, uvim.TargetGroup},
+			ChannelTypes:     []string{uvim.ChannelDirect, uvim.ChannelGroup},
 		},
 	})
 	if err != nil {
@@ -68,13 +70,15 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 		ConversationType string `json:"conversationType"`
 		SessionWebhook   string `json:"sessionWebhook"`
 		SessionExpiresAt int64  `json:"sessionWebhookExpiredTime"`
+		RobotCode        string `json:"robotCode"`
 		Text             struct {
 			Content string `json:"content"`
 		} `json:"text"`
-		Image map[string]any `json:"image"`
-		File  map[string]any `json:"file"`
-		Video map[string]any `json:"video"`
-		Voice map[string]any `json:"voice"`
+		Content any            `json:"content"`
+		Image   map[string]any `json:"image"`
+		File    map[string]any `json:"file"`
+		Video   map[string]any `json:"video"`
+		Voice   map[string]any `json:"voice"`
 	}
 	if err := json.Unmarshal(raw, &msg); err != nil {
 		return uvim.Event{}, false, err
@@ -88,7 +92,8 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 		channelType = uvim.ChannelDirect
 		target = uvim.OutboundTarget{ID: msg.SenderStaffID, Kind: uvim.TargetUser}
 	}
-	refs := dingtalkResources(config, msg.MsgType, msg.Image, msg.File, msg.Video, msg.Voice)
+	text := firstNonEmpty(msg.Text.Content, dingtalkContentText(msg.MsgType, msg.Content))
+	refs := dingtalkResources(config, msg.RobotCode, msg.MsgType, msg.Content, msg.Image, msg.File, msg.Video, msg.Voice)
 	var expiresAt *time.Time
 	if msg.SessionExpiresAt > 0 {
 		value := time.UnixMilli(msg.SessionExpiresAt).UTC()
@@ -101,7 +106,7 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 		Connector: config.ConnectorID,
 		Channel:   uvim.Channel{ID: msg.ConversationID, Type: channelType},
 		User:      uvim.User{ID: msg.SenderStaffID, Name: msg.SenderNick},
-		Message:   uvim.Message{ID: msg.MsgID, Text: strings.TrimSpace(msg.Text.Content), Type: uvim.FirstNonEmpty(msg.MsgType, "text"), Resources: refs},
+		Message:   uvim.Message{ID: msg.MsgID, Text: strings.TrimSpace(text), Type: uvim.FirstNonEmpty(msg.MsgType, "text"), Resources: refs},
 		Referrer:  uvim.Referrer{MessageID: msg.MsgID, ChannelID: msg.ConversationID, ReplyToken: msg.SessionWebhook, ExpiresAt: expiresAt, Target: &target},
 		Addressed: true,
 	}, true, nil
@@ -170,39 +175,96 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func dingtalkResources(config httpchannel.Config, msgType string, payloads ...map[string]any) []uvim.ResourceRef {
+func dingtalkContentText(msgType string, content any) string {
+	if !strings.EqualFold(strings.TrimSpace(msgType), "richText") {
+		return ""
+	}
+	var parts []string
+	for _, item := range richTextItems(content) {
+		if text := strings.TrimSpace(uvim.StringValue(item["text"])); text != "" {
+			parts = append(parts, text)
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+func dingtalkResources(config httpchannel.Config, robotCode, msgType string, content any, payloads ...map[string]any) []uvim.ResourceRef {
 	var refs []uvim.ResourceRef
 	for _, payload := range payloads {
 		if len(payload) == 0 {
 			continue
 		}
-		rawURL := firstNonEmpty(
-			uvim.StringValue(payload["url"]),
-			uvim.StringValue(payload["downloadUrl"]),
-			uvim.StringValue(payload["download_url"]),
-			uvim.StringValue(payload["fileUrl"]),
-			uvim.StringValue(payload["file_url"]),
-			uvim.StringValue(payload["picUrl"]),
-			uvim.StringValue(payload["pic_url"]),
-		)
-		if rawURL == "" {
-			continue
+		if ref, ok := resourceFromDingTalkPayload(config, robotCode, msgType, payload); ok {
+			refs = append(refs, ref)
 		}
-		mime := uvim.StringValue(payload["mime"])
-		if mime == "" {
-			mime = uvim.StringValue(payload["mimeType"])
+	}
+	if strings.EqualFold(strings.TrimSpace(msgType), "richText") {
+		for _, item := range richTextItems(content) {
+			itemType := firstNonEmpty(uvim.StringValue(item["type"]), uvim.StringValue(item["msgtype"]))
+			if ref, ok := resourceFromDingTalkPayload(config, robotCode, itemType, item); ok {
+				refs = append(refs, ref)
+			}
 		}
-		refs = append(refs, uvim.ResourceRef{
-			Provider:  "dingtalk",
-			Connector: config.ConnectorID,
-			Kind:      kindFromMessageType(msgType, mime),
-			Name:      firstNonEmpty(uvim.StringValue(payload["fileName"]), uvim.StringValue(payload["file_name"]), uvim.StringValue(payload["name"])),
-			URL:       rawURL,
-			MIME:      mime,
-			SizeBytes: sizeFromPayload(payload),
-		})
+		return refs
+	}
+	if payload := uvim.MapStringAny(content); len(payload) > 0 {
+		if ref, ok := resourceFromDingTalkPayload(config, robotCode, msgType, payload); ok {
+			refs = append(refs, ref)
+		}
 	}
 	return refs
+}
+
+func richTextItems(content any) []map[string]any {
+	values, _ := uvim.MapStringAny(content)["richText"].([]any)
+	items := make([]map[string]any, 0, len(values))
+	for _, value := range values {
+		if item := uvim.MapStringAny(value); len(item) > 0 {
+			items = append(items, item)
+		}
+	}
+	return items
+}
+
+func resourceFromDingTalkPayload(config httpchannel.Config, robotCode, msgType string, payload map[string]any) (uvim.ResourceRef, bool) {
+	resourceType := msgType
+	if strings.TrimSpace(resourceType) == "" && uvim.StringValue(payload["pictureDownloadCode"]) != "" {
+		resourceType = "picture"
+	}
+	rawURL := firstNonEmpty(
+		uvim.StringValue(payload["url"]),
+		uvim.StringValue(payload["downloadUrl"]),
+		uvim.StringValue(payload["download_url"]),
+		uvim.StringValue(payload["fileUrl"]),
+		uvim.StringValue(payload["file_url"]),
+		uvim.StringValue(payload["picUrl"]),
+		uvim.StringValue(payload["pic_url"]),
+	)
+	downloadCode := firstNonEmpty(
+		uvim.StringValue(payload["downloadCode"]),
+		uvim.StringValue(payload["pictureDownloadCode"]),
+		uvim.StringValue(payload["fileDownloadCode"]),
+		uvim.StringValue(payload["audioDownloadCode"]),
+		uvim.StringValue(payload["videoDownloadCode"]),
+	)
+	if rawURL == "" && downloadCode == "" {
+		return uvim.ResourceRef{}, false
+	}
+	mime := firstNonEmpty(uvim.StringValue(payload["mime"]), uvim.StringValue(payload["mimeType"]))
+	ref := uvim.ResourceRef{
+		Provider:  "dingtalk",
+		Connector: config.ConnectorID,
+		Kind:      kindFromMessageType(resourceType, mime),
+		Name:      firstNonEmpty(uvim.StringValue(payload["fileName"]), uvim.StringValue(payload["file_name"]), uvim.StringValue(payload["name"])),
+		Key:       downloadCode,
+		URL:       rawURL,
+		MIME:      mime,
+		SizeBytes: sizeFromPayload(payload),
+	}
+	if downloadCode != "" && strings.TrimSpace(robotCode) != "" {
+		ref.Private = map[string]string{"robot_code": strings.TrimSpace(robotCode)}
+	}
+	return ref, true
 }
 
 func kindFromMessageType(messageType, mime string) string {

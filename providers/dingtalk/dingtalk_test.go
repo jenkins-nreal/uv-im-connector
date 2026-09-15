@@ -2,13 +2,19 @@ package dingtalk
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
 	uvim "github.com/hengshi/uv-im-connector"
 	"github.com/hengshi/uv-im-connector/providers/httpchannel"
-	"github.com/open-dingtalk/dingtalk-stream-sdk-go/chatbot"
+	"github.com/hengshi/uv-im-connector/server"
+	"github.com/open-dingtalk/dingtalk-stream-sdk-go/handler"
+	"github.com/open-dingtalk/dingtalk-stream-sdk-go/payload"
 )
 
 func TestDecodeUsesSessionWebhookExpiry(t *testing.T) {
@@ -49,6 +55,112 @@ func TestNewRejectsPartialStreamCredentials(t *testing.T) {
 	}
 }
 
+func TestDecodeContentRichTextAndDownloadCodes(t *testing.T) {
+	event, ok, err := Decode([]byte(`{
+  "msgId": "m-rich",
+  "msgtype": "richText",
+  "robotCode": "robot-1",
+  "senderStaffId": "u1",
+  "senderNick": "Ada",
+  "conversationId": "g1",
+  "conversationType": "2",
+  "content": {
+    "richText": [
+      {"text": "hello"},
+      {"type": "picture", "downloadCode": "pic-code", "fileName": "pic.png"},
+      {"text": "world"},
+      {"type": "file", "downloadCode": "file-code", "fileName": "report.pdf", "fileSize": 12}
+    ]
+  }
+}`), httpchannel.Config{ConnectorID: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("decode ok = false")
+	}
+	if event.Message.Text != "hello\nworld" {
+		t.Fatalf("text = %q", event.Message.Text)
+	}
+	if len(event.Message.Resources) != 2 {
+		t.Fatalf("resources = %+v", event.Message.Resources)
+	}
+	if event.Message.Resources[0].Kind != uvim.ElementImage || event.Message.Resources[0].Key != "pic-code" {
+		t.Fatalf("image resource = %+v", event.Message.Resources[0])
+	}
+	if event.Message.Resources[1].Kind != uvim.ElementFile || event.Message.Resources[1].Key != "file-code" || event.Message.Resources[1].SizeBytes != 12 {
+		t.Fatalf("file resource = %+v", event.Message.Resources[1])
+	}
+	if event.Message.Resources[0].Private["robot_code"] != "robot-1" {
+		t.Fatalf("private metadata = %+v", event.Message.Resources[0].Private)
+	}
+}
+
+func TestDownloadExchangesDownloadCodeForTemporaryURL(t *testing.T) {
+	var sawTokenRequest, sawDownloadRequest bool
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1.0/oauth2/accessToken":
+			sawTokenRequest = true
+			var body map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body["appKey"] != "client-id" || body["appSecret"] != "client-secret" {
+				t.Fatalf("token body = %+v", body)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{"accessToken": "access-token"})
+		case "/v1.0/robot/messageFiles/download":
+			sawDownloadRequest = true
+			if got := r.Header.Get("x-acs-dingtalk-access-token"); got != "access-token" {
+				t.Fatalf("download token = %q", got)
+			}
+			var body map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body["robotCode"] != "robot-1" || body["downloadCode"] != "download-code" {
+				t.Fatalf("download body = %+v", body)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{"downloadUrl": apiURL(r) + "/file"})
+		case "/file":
+			_, _ = io.WriteString(w, "file bytes")
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer api.Close()
+
+	provider, err := New(Config{BaseURL: api.URL, ClientID: "client-id", ClientSecret: "client-secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, err := provider.Download(context.Background(), uvim.ResourceDownloadRequest{
+		Dir: t.TempDir(),
+		Resource: uvim.ResourceRef{
+			Provider: "dingtalk",
+			Kind:     uvim.ElementImage,
+			Name:     "pic.png",
+			Key:      "download-code",
+			URL:      api.URL + "/legacy-file",
+			Private:  map[string]string{"robot_code": "robot-1"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sawTokenRequest || !sawDownloadRequest {
+		t.Fatalf("token=%t download=%t", sawTokenRequest, sawDownloadRequest)
+	}
+	if ref.InternalURL == "" || ref.Key != "" {
+		t.Fatalf("downloaded ref = %+v", ref)
+	}
+}
+
+func apiURL(r *http.Request) string {
+	return "http://" + r.Host
+}
+
 func TestStreamRunEmitsNormalizedEvent(t *testing.T) {
 	provider, err := New(Config{
 		ConnectorID:  "main",
@@ -61,16 +173,16 @@ func TestStreamRunEmitsNormalizedEvent(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	fake := &fakeStreamClient{
-		message: &chatbot.BotCallbackDataModel{
-			MsgId:            "m-stream",
-			Msgtype:          "text",
-			SenderStaffId:    "u1",
-			SenderNick:       "Actor",
-			ConversationId:   "c1",
-			ConversationType: "1",
-			SessionWebhook:   "https://oapi.dingtalk.com/robot/sendBySession?session=secret",
-			Text:             chatbot.BotCallbackDataTextModel{Content: "/start JARVIS-IM-REAL-E2E-1"},
-		},
+		data: `{
+  "msgId": "m-stream",
+  "msgtype": "text",
+  "senderStaffId": "u1",
+  "senderNick": "Actor",
+  "conversationId": "c1",
+  "conversationType": "1",
+  "sessionWebhook": "https://oapi.dingtalk.com/robot/sendBySession?session=secret",
+  "text": {"content": "/start JARVIS-IM-REAL-E2E-1"}
+}`,
 		afterMessage: cancel,
 	}
 	provider.newStreamClient = func(string, string) streamClient { return fake }
@@ -98,13 +210,168 @@ func TestStreamRunEmitsNormalizedEvent(t *testing.T) {
 	}
 }
 
+func TestStreamRunPreservesDownloadCodeRobotCode(t *testing.T) {
+	provider, err := New(Config{
+		ConnectorID:  "main",
+		ClientID:     "client-id",
+		ClientSecret: "client-secret",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	fake := &fakeStreamClient{
+		data: `{
+  "msgId": "m-stream-picture",
+  "msgtype": "picture",
+  "robotCode": "robot-1",
+  "senderStaffId": "u1",
+  "conversationId": "c1",
+  "conversationType": "2",
+  "content": {"downloadCode": "download-code", "fileName": "image.png"}
+}`,
+		afterMessage: cancel,
+	}
+	provider.newStreamClient = func(string, string) streamClient { return fake }
+
+	var events []uvim.Event
+	err = provider.Run(ctx, uvim.EventSinkFunc(func(_ context.Context, event uvim.Event) error {
+		events = append(events, event)
+		return nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want 1", len(events))
+	}
+	resources := events[0].Message.Resources
+	if len(resources) != 1 {
+		t.Fatalf("resources = %+v", resources)
+	}
+	if resources[0].Kind != uvim.ElementImage || resources[0].Key != "download-code" || resources[0].Name != "image.png" {
+		t.Fatalf("resource = %+v", resources[0])
+	}
+	if resources[0].Private["robot_code"] != "robot-1" {
+		t.Fatalf("private metadata = %+v", resources[0].Private)
+	}
+}
+
+func TestStreamRunDownloadsDownloadCodeThroughHub(t *testing.T) {
+	var sawDownloadRequest bool
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1.0/oauth2/accessToken":
+			var body map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body["appKey"] != "client-id" || body["appSecret"] != "client-secret" {
+				t.Fatalf("token body = %+v", body)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{"accessToken": "access-token"})
+		case "/v1.0/robot/messageFiles/download":
+			sawDownloadRequest = true
+			if got := r.Header.Get("x-acs-dingtalk-access-token"); got != "access-token" {
+				t.Fatalf("download token = %q", got)
+			}
+			var body map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body["robotCode"] != "robot-1" || body["downloadCode"] != "download-code" {
+				t.Fatalf("download body = %+v", body)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{"downloadUrl": apiURL(r) + "/file"})
+		case "/file":
+			_, _ = io.WriteString(w, "hub file bytes")
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer api.Close()
+
+	provider, err := New(Config{
+		ConnectorID:  "main",
+		BaseURL:      api.URL,
+		ClientID:     "client-id",
+		ClientSecret: "client-secret",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fake := &fakeStreamClient{
+		data: `{
+  "msgId": "m-stream-picture",
+  "msgtype": "picture",
+  "robotCode": "robot-1",
+  "senderStaffId": "u1",
+  "conversationId": "c1",
+  "conversationType": "2",
+  "content": {"downloadCode": "download-code", "fileName": "image.png"}
+}`,
+		afterMessage: cancel,
+	}
+	provider.newStreamClient = func(string, string) streamClient { return fake }
+
+	store := &uvim.ResourceStore{Dir: t.TempDir()}
+	log, err := uvim.NewEventLog(t.TempDir() + "/events.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub := server.NewHub(uvim.NewProviderRegistry(provider), log, store)
+	if err := provider.Run(ctx, hub); err != nil {
+		t.Fatal(err)
+	}
+	events, err := log.ReadAfter(context.Background(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want 1", len(events))
+	}
+	if !sawDownloadRequest {
+		t.Fatal("Hub did not trigger the DingTalk downloadCode exchange")
+	}
+	resources := events[0].Message.Resources
+	if len(resources) != 1 {
+		t.Fatalf("resources = %+v", resources)
+	}
+	ref := resources[0]
+	if ref.Kind != uvim.ElementImage || ref.Name != "image.png" || ref.InternalURL == "" || ref.Error != "" {
+		t.Fatalf("persisted resource = %+v", ref)
+	}
+	if ref.Key != "" || ref.URL != "" || ref.Private != nil {
+		t.Fatalf("persisted resource was not sanitized: %+v", ref)
+	}
+	file, _, err := store.Open(ref.InternalURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	data, err := io.ReadAll(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "hub file bytes" {
+		t.Fatalf("downloaded body = %q", data)
+	}
+}
+
 type fakeStreamClient struct {
-	handler      chatbot.IChatBotMessageHandler
-	message      *chatbot.BotCallbackDataModel
+	handler      handler.IFrameHandler
+	data         string
 	afterMessage func()
 }
 
-func (f *fakeStreamClient) RegisterChatBotCallbackRouter(handler chatbot.IChatBotMessageHandler) {
+func (f *fakeStreamClient) RegisterCallbackRouter(topic string, handler handler.IFrameHandler) {
+	if topic != payload.BotMessageCallbackTopic {
+		return
+	}
 	f.handler = handler
 }
 
@@ -112,7 +379,13 @@ func (f *fakeStreamClient) Start(ctx context.Context) error {
 	if f.handler == nil {
 		return fmt.Errorf("chatbot handler was not registered")
 	}
-	if _, err := f.handler(ctx, f.message); err != nil {
+	_, err := f.handler(ctx, &payload.DataFrame{
+		Headers: payload.DataFrameHeader{
+			payload.DataFrameHeaderKTopic: payload.BotMessageCallbackTopic,
+		},
+		Data: f.data,
+	})
+	if err != nil {
 		return err
 	}
 	if f.afterMessage != nil {
