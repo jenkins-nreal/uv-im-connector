@@ -11,6 +11,16 @@ import (
 	uvim "github.com/hengshi/uv-im-connector"
 )
 
+type quotedMessageItem struct {
+	ID      string `json:"message_id"`
+	ChatID  string `json:"chat_id"`
+	Type    string `json:"msg_type"`
+	Deleted bool   `json:"deleted"`
+	Body    struct {
+		Content string `json:"content"`
+	} `json:"body"`
+}
+
 // Resolve only the explicitly quoted parent, using the connector's bot identity.
 // Keep quoted content out of Message.Text: it must not become a user command or
 // change mention admission. Context and files use the existing resource channel.
@@ -54,15 +64,7 @@ func (p *Provider) quotedMessage(ctx context.Context, id, chatID string) (string
 	var response struct {
 		Code int `json:"code"`
 		Data struct {
-			Items []struct {
-				ID      string `json:"message_id"`
-				ChatID  string `json:"chat_id"`
-				Type    string `json:"msg_type"`
-				Deleted bool   `json:"deleted"`
-				Body    struct {
-					Content string `json:"content"`
-				} `json:"body"`
-			} `json:"items"`
+			Items []quotedMessageItem `json:"items"`
 		} `json:"data"`
 	}
 	if json.Unmarshal(raw, &response) != nil {
@@ -71,10 +73,16 @@ func (p *Provider) quotedMessage(ctx context.Context, id, chatID string) (string
 	if response.Code != 0 {
 		return "", nil, fmt.Errorf("quoted_message_lookup_failed: code=%d", response.Code)
 	}
-	if len(response.Data.Items) != 1 {
+	var message quotedMessageItem
+	for _, item := range response.Data.Items {
+		if item.ID == id {
+			message = item
+			break
+		}
+	}
+	if message.ID == "" {
 		return "", nil, fmt.Errorf("quoted_message_not_found")
 	}
-	message := response.Data.Items[0]
 	if message.ID != id || chatID == "" || message.ChatID != chatID {
 		return "", nil, fmt.Errorf("quoted_message_identity_mismatch")
 	}
@@ -85,7 +93,10 @@ func (p *Provider) quotedMessage(ctx context.Context, id, chatID string) (string
 		return "", nil, fmt.Errorf("quoted_message_invalid_content")
 	}
 	resources := messageResources(message.Type, message.Body.Content)
-	text := flattenContent(message.Type, message.Body.Content)
+	text := messageBody(message.Type, message.Body.Content)
+	if message.Type == "merge_forward" {
+		text = mergeForwardBody(response.Data.Items, text)
+	}
 	if text == "" && len(resources) == 0 {
 		return "", nil, fmt.Errorf("quoted_message_content_unavailable")
 	}
@@ -101,4 +112,21 @@ func (p *Provider) quotedMessage(ctx context.Context, id, chatID string) (string
 		fmt.Fprintf(&context, "Attachment: %s (%s)\n", resources[i].Name, resources[i].Kind)
 	}
 	return context.String(), resources, nil
+}
+
+func mergeForwardBody(items []quotedMessageItem, parentBody string) string {
+	lines := []string{parentBody}
+	childNumber := 0
+	for _, item := range items {
+		if item.ID == "" || item.Type == "merge_forward" {
+			continue
+		}
+		body := messageBody(item.Type, item.Body.Content)
+		if body == "" {
+			continue
+		}
+		childNumber++
+		lines = append(lines, fmt.Sprintf("Forwarded message %d (%s): %s", childNumber, item.Type, body))
+	}
+	return strings.Join(lines, "\n")
 }

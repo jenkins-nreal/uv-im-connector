@@ -17,7 +17,7 @@ import (
 
 // Runs the real WebSocket adapter and Hub with a local Feishu API stub.
 func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
-	for _, scenario := range []string{"file", "folder", "folder-failed", "text", "denied", "deleted", "wrong-chat", "wrong-message", "download-failed", "unaddressed"} {
+	for _, scenario := range []string{"file", "folder", "folder-failed", "text", "interactive", "share-chat", "share-user", "system", "merge-forward", "denied", "deleted", "wrong-chat", "wrong-message", "download-failed", "unaddressed"} {
 		t.Run(scenario, func(t *testing.T) {
 			var api *httptest.Server
 			api = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -69,6 +69,21 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 					if scenario == "text" {
 						kind, content = "text", `{"text":"fatal: tracking failed"}`
 					}
+					if scenario == "interactive" {
+						kind, content = "interactive", `{"elements":[{"tag":"img","img_key":"card-image"}]}`
+					}
+					if scenario == "share-chat" {
+						kind, content = "share_chat", `{"chat_id":"shared-chat"}`
+					}
+					if scenario == "share-user" {
+						kind, content = "share_user", `{"user_id":"shared-user"}`
+					}
+					if scenario == "system" {
+						kind, content = "system", `{}`
+					}
+					if scenario == "merge-forward" {
+						kind, content = "merge_forward", `{}`
+					}
 					chat, id := "chat", "parent"
 					if scenario == "wrong-chat" {
 						chat = "other-chat"
@@ -76,9 +91,13 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 					if scenario == "wrong-message" {
 						id = "other-message"
 					}
-					json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"items": []any{map[string]any{
+					items := []any{map[string]any{
 						"message_id": id, "chat_id": chat, "msg_type": kind, "deleted": scenario == "deleted", "body": map[string]any{"content": content},
-					}}}})
+					}}
+					if scenario == "merge-forward" {
+						items = append(items, map[string]any{"message_id": "child", "chat_id": "chat", "msg_type": "file", "body": map[string]any{"content": `{"file_key":"forwarded-file","file_name":"forwarded.log"}`}})
+					}
+					json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"items": items}})
 				case "/open-apis/im/v1/messages/parent/resources/log-key":
 					if scenario != "file" && scenario != "folder" && scenario != "folder-failed" && scenario != "download-failed" {
 						t.Error("downloaded an unverified quote")
@@ -126,6 +145,9 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 				}
 				return
 			}
+			if (scenario == "interactive" || scenario == "merge-forward") && len(event.Message.Resources) != 1 {
+				t.Fatalf("child resources leaked into event: %+v", event.Message.Resources)
+			}
 			if len(event.Message.Resources) == 0 {
 				t.Fatal("quoted message context missing from emitted resources")
 			}
@@ -151,18 +173,38 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 				t.Fatalf("folder context missing: %q", contents)
 			}
 			switch scenario {
-			case "file", "folder", "text":
-				if !strings.Contains(contents, "fatal: tracking failed") || !strings.Contains(contents, "parent") || len(failures) != 0 {
+			case "file", "folder", "text", "interactive", "share-chat", "share-user", "system", "merge-forward":
+				if !strings.Contains(contents, "parent") || len(failures) != 0 {
 					t.Fatalf("contents=%q failures=%v", contents, failures)
+				}
+				if scenario == "file" || scenario == "folder" || scenario == "text" {
+					if !strings.Contains(contents, "fatal: tracking failed") {
+						t.Fatal("message content missing")
+					}
 				}
 				if scenario == "file" && !strings.Contains(contents, "device.log") {
 					t.Fatal("log attachment missing")
+				}
+				if scenario == "interactive" && !strings.Contains(contents, "Interactive card") {
+					t.Fatal("interactive context missing")
+				}
+				if scenario == "share-chat" && !strings.Contains(contents, "shared-chat") {
+					t.Fatal("shared chat context missing")
+				}
+				if scenario == "share-user" && !strings.Contains(contents, "shared-user") {
+					t.Fatal("shared user context missing")
+				}
+				if scenario == "system" && !strings.Contains(contents, "System message") {
+					t.Fatal("system context missing")
+				}
+				if scenario == "merge-forward" && (!strings.Contains(contents, "forwarded messages") || !strings.Contains(contents, "Forwarded message 1 (file): [File]")) {
+					t.Fatal("merge-forward context missing")
 				}
 			default:
 				if len(failures) == 0 || strings.Contains(contents, "fatal:") || strings.Contains(strings.Join(failures, ""), "private diagnostic") {
 					t.Fatalf("contents=%q failures=%v", contents, failures)
 				}
-				want := map[string]string{"denied": "quoted_message_lookup_failed: code=99991672", "deleted": "quoted_message_deleted", "wrong-chat": "quoted_message_identity_mismatch", "wrong-message": "quoted_message_identity_mismatch", "download-failed": "download_failed", "folder-failed": "download_failed"}[scenario]
+				want := map[string]string{"denied": "quoted_message_lookup_failed: code=99991672", "deleted": "quoted_message_deleted", "wrong-chat": "quoted_message_identity_mismatch", "wrong-message": "quoted_message_not_found", "download-failed": "download_failed", "folder-failed": "download_failed"}[scenario]
 				if len(failures) != 1 || failures[0] != want {
 					t.Fatalf("failure=%v want=%q", failures, want)
 				}

@@ -54,6 +54,12 @@ If it fails, the context identifies the original folder and asks for a ZIP archi
 or individual files. Do not claim that folder contents were retrieved based only
 on its metadata or a successful local transport stub.
 
+Quoted `merge_forward` responses may contain the parent and its child messages;
+the connector selects the requested parent and keeps the forwarded message
+context available. Lark's resource API does not support merge-forward messages
+(including child messages) or `interactive` message cards, so those messages
+provide text/summary context but do not expose child resources.
+
 ## Release Boundary
 
 jarvis-box does not host, spawn, or auto-update `uv-im-connector`. A connector bugfix that keeps `protocol_version` compatible is deployed by upgrading the connector service. jarvis-box needs a dependency bump and release only when it consumes new Go client/API behavior or when the connector protocol becomes incompatible with the supported protocol set.

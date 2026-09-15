@@ -39,35 +39,7 @@ func DecodePayload(payload []byte, config DecoderConfig) (uvim.Event, bool, erro
 		return uvim.Event{}, false, fmt.Errorf("event: %w", err)
 	}
 	resources := messageResources(evt.Message.MessageType, evt.Message.Content)
-	body := ""
-	switch evt.Message.MessageType {
-	case "text", "post":
-		body = flattenContent(evt.Message.MessageType, evt.Message.Content)
-	case "image":
-		body = "[Image]"
-	case "file":
-		body = "[File]"
-	case "folder":
-		body = "[Folder]"
-	case "audio":
-		body = "[Audio]"
-	case "media":
-		body = "[Video]"
-	case "sticker":
-		body = "[Sticker]"
-	case "interactive":
-		body = "[Interactive card]"
-	case "share_chat":
-		body = shareTargetBody("chat", evt.Message.Content)
-	case "share_user":
-		body = shareTargetBody("user", evt.Message.Content)
-	case "system":
-		body = "[System message]"
-	case "merge_forward":
-		body = "[forwarded messages]"
-	default:
-		body = unsupportedMessageBody(evt.Message.MessageType)
-	}
+	body := messageBody(evt.Message.MessageType, evt.Message.Content)
 	body = resolveMentions(body, evt.Message.Mentions, config.BotOpenID, config.BotUnionID)
 	channelType := normalizeChatType(evt.Message.ChatType)
 	messageID := evt.Message.MessageID
@@ -176,6 +148,37 @@ func flattenContent(msgType, rawContent string) string {
 	}
 }
 
+func messageBody(msgType, rawContent string) string {
+	switch msgType {
+	case "text", "post":
+		return flattenContent(msgType, rawContent)
+	case "image":
+		return "[Image]"
+	case "file":
+		return "[File]"
+	case "folder":
+		return "[Folder]"
+	case "audio":
+		return "[Audio]"
+	case "media":
+		return "[Video]"
+	case "sticker":
+		return "[Sticker]"
+	case "interactive":
+		return "[Interactive card]"
+	case "share_chat":
+		return shareTargetBody("chat", rawContent)
+	case "share_user":
+		return shareTargetBody("user", rawContent)
+	case "system":
+		return "[System message]"
+	case "merge_forward":
+		return "[forwarded messages]"
+	default:
+		return unsupportedMessageBody(msgType)
+	}
+}
+
 func messageResources(msgType, rawContent string) []uvim.ResourceRef {
 	if strings.TrimSpace(rawContent) == "" {
 		return nil
@@ -225,12 +228,6 @@ func messageResources(msgType, rawContent string) []uvim.ResourceRef {
 			kind = uvim.ElementVideo
 		}
 		return []uvim.ResourceRef{{Kind: kind, Name: uvim.FirstNonEmpty(uvim.StringValue(doc["file_name"]), uvim.StringValue(doc["name"])), Key: key}}
-	case "sticker":
-		key := uvim.StringValue(doc["file_key"])
-		if key == "" {
-			return nil
-		}
-		return []uvim.ResourceRef{{Kind: uvim.ElementImage, Key: key}}
 	default:
 		return nil
 	}

@@ -428,7 +428,7 @@ func TestDecodePayloadCoversAdditionalMessageTypes(t *testing.T) {
 		wantKind    string
 		wantKey     string
 	}{
-		{name: "sticker", messageType: "sticker", content: `{"file_key":"sticker-1"}`, wantText: "[Sticker]", wantKind: uvim.ElementImage, wantKey: "sticker-1"},
+		{name: "sticker", messageType: "sticker", content: `{"file_key":"sticker-1"}`, wantText: "[Sticker]"},
 		{name: "interactive", messageType: "interactive", content: `{}`, wantText: "[Interactive card]"},
 		{name: "shared chat", messageType: "share_chat", content: `{"chat_id":"chat-1"}`, wantText: "[Shared chat: chat-1]"},
 		{name: "shared user", messageType: "share_user", content: `{"user_id":"user-1"}`, wantText: "[Shared user: user-1]"},
