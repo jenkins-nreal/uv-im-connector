@@ -53,8 +53,20 @@ func DecodePayload(payload []byte, config DecoderConfig) (uvim.Event, bool, erro
 		body = "[Audio]"
 	case "media":
 		body = "[Video]"
+	case "sticker":
+		body = "[Sticker]"
+	case "interactive":
+		body = "[Interactive card]"
+	case "share_chat":
+		body = shareTargetBody("chat", evt.Message.Content)
+	case "share_user":
+		body = shareTargetBody("user", evt.Message.Content)
+	case "system":
+		body = "[System message]"
 	case "merge_forward":
 		body = "[forwarded messages]"
+	default:
+		body = unsupportedMessageBody(evt.Message.MessageType)
 	}
 	body = resolveMentions(body, evt.Message.Mentions, config.BotOpenID, config.BotUnionID)
 	channelType := normalizeChatType(evt.Message.ChatType)
@@ -213,9 +225,34 @@ func messageResources(msgType, rawContent string) []uvim.ResourceRef {
 			kind = uvim.ElementVideo
 		}
 		return []uvim.ResourceRef{{Kind: kind, Name: uvim.FirstNonEmpty(uvim.StringValue(doc["file_name"]), uvim.StringValue(doc["name"])), Key: key}}
+	case "sticker":
+		key := uvim.StringValue(doc["file_key"])
+		if key == "" {
+			return nil
+		}
+		return []uvim.ResourceRef{{Kind: uvim.ElementImage, Key: key}}
 	default:
 		return nil
 	}
+}
+
+func shareTargetBody(kind, rawContent string) string {
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(rawContent), &doc); err == nil {
+		key := kind + "_id"
+		if id := uvim.StringValue(doc[key]); id != "" {
+			return fmt.Sprintf("[Shared %s: %s]", kind, id)
+		}
+	}
+	return fmt.Sprintf("[Shared %s]", kind)
+}
+
+func unsupportedMessageBody(messageType string) string {
+	messageType = strings.TrimSpace(messageType)
+	if messageType == "" {
+		return "[Unsupported message]"
+	}
+	return fmt.Sprintf("[Unsupported message: %s]", messageType)
 }
 
 type postContent struct {
