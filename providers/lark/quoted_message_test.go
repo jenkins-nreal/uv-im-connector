@@ -17,7 +17,7 @@ import (
 
 // Runs the real WebSocket adapter and Hub with a local Feishu API stub.
 func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
-	for _, scenario := range []string{"file", "text", "denied", "deleted", "wrong-chat", "wrong-message", "download-failed", "unaddressed"} {
+	for _, scenario := range []string{"file", "folder", "folder-failed", "text", "denied", "deleted", "wrong-chat", "wrong-message", "download-failed", "unaddressed"} {
 		t.Run(scenario, func(t *testing.T) {
 			var api *httptest.Server
 			api = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -63,6 +63,9 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 						return
 					}
 					kind, content := "file", `{"file_key":"log-key","file_name":"device.log"}`
+					if strings.HasPrefix(scenario, "folder") {
+						kind = "folder"
+					}
 					if scenario == "text" {
 						kind, content = "text", `{"text":"fatal: tracking failed"}`
 					}
@@ -77,8 +80,13 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 						"message_id": id, "chat_id": chat, "msg_type": kind, "deleted": scenario == "deleted", "body": map[string]any{"content": content},
 					}}}})
 				case "/open-apis/im/v1/messages/parent/resources/log-key":
-					if scenario != "file" && scenario != "download-failed" {
+					if scenario != "file" && scenario != "folder" && scenario != "folder-failed" && scenario != "download-failed" {
 						t.Error("downloaded an unverified quote")
+					}
+					if scenario == "folder-failed" {
+						w.WriteHeader(http.StatusInternalServerError)
+						json.NewEncoder(w).Encode(map[string]any{"code": 40009, "msg": "internal server error"})
+						return
 					}
 					if scenario == "download-failed" {
 						w.WriteHeader(http.StatusForbidden)
@@ -139,8 +147,11 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 				}
 				contents += ref.Name + "\n" + string(data)
 			}
+			if strings.HasPrefix(scenario, "folder") && (!strings.Contains(contents, "Message type: folder") || !strings.Contains(contents, "ZIP archive")) {
+				t.Fatalf("folder context missing: %q", contents)
+			}
 			switch scenario {
-			case "file", "text":
+			case "file", "folder", "text":
 				if !strings.Contains(contents, "fatal: tracking failed") || !strings.Contains(contents, "parent") || len(failures) != 0 {
 					t.Fatalf("contents=%q failures=%v", contents, failures)
 				}
@@ -151,7 +162,7 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 				if len(failures) == 0 || strings.Contains(contents, "fatal:") || strings.Contains(strings.Join(failures, ""), "private diagnostic") {
 					t.Fatalf("contents=%q failures=%v", contents, failures)
 				}
-				want := map[string]string{"denied": "quoted_message_lookup_failed: code=99991672", "deleted": "quoted_message_deleted", "wrong-chat": "quoted_message_identity_mismatch", "wrong-message": "quoted_message_identity_mismatch", "download-failed": "download_failed"}[scenario]
+				want := map[string]string{"denied": "quoted_message_lookup_failed: code=99991672", "deleted": "quoted_message_deleted", "wrong-chat": "quoted_message_identity_mismatch", "wrong-message": "quoted_message_identity_mismatch", "download-failed": "download_failed", "folder-failed": "download_failed"}[scenario]
 				if len(failures) != 1 || failures[0] != want {
 					t.Fatalf("failure=%v want=%q", failures, want)
 				}

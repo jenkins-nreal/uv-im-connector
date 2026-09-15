@@ -47,6 +47,8 @@ func DecodePayload(payload []byte, config DecoderConfig) (uvim.Event, bool, erro
 		body = "[Image]"
 	case "file":
 		body = "[File]"
+	case "folder":
+		body = "[Folder]"
 	case "audio":
 		body = "[Audio]"
 	case "media":
@@ -198,12 +200,15 @@ func messageResources(msgType, rawContent string) []uvim.ResourceRef {
 			return nil
 		}
 		return []uvim.ResourceRef{{Kind: uvim.ElementImage, Key: key}}
-	case "file", "audio", "media":
+	case "file", "folder", "audio", "media":
 		key := uvim.StringValue(doc["file_key"])
 		if key == "" {
 			return nil
 		}
 		kind := msgType
+		if msgType == "folder" {
+			kind = uvim.ElementFile
+		}
 		if msgType == "media" {
 			kind = uvim.ElementVideo
 		}

@@ -48,6 +48,12 @@ normalized `quoted_message_*` error; a file download failure remains
 than reporting that the user supplied no attachment. Existing clients can consume
 this through the resource protocol without gaining provider credentials.
 
+Lark `folder` messages are recognized as file resources, including when quoted.
+Recognition does not guarantee that Lark's resource API can download the folder.
+If it fails, the context identifies the original folder and asks for a ZIP archive
+or individual files. Do not claim that folder contents were retrieved based only
+on its metadata or a successful local transport stub.
+
 ## Release Boundary
 
 jarvis-box does not host, spawn, or auto-update `uv-im-connector`. A connector bugfix that keeps `protocol_version` compatible is deployed by upgrading the connector service. jarvis-box needs a dependency bump and release only when it consumes new Go client/API behavior or when the connector protocol becomes incompatible with the supported protocol set.
