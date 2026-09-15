@@ -12,7 +12,8 @@ import (
 
 	uvim "github.com/hengshi/uv-im-connector"
 	"github.com/hengshi/uv-im-connector/providers/httpchannel"
-	"github.com/open-dingtalk/dingtalk-stream-sdk-go/chatbot"
+	"github.com/open-dingtalk/dingtalk-stream-sdk-go/handler"
+	"github.com/open-dingtalk/dingtalk-stream-sdk-go/payload"
 )
 
 func TestDecodeUsesSessionWebhookExpiry(t *testing.T) {
@@ -171,16 +172,16 @@ func TestStreamRunEmitsNormalizedEvent(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	fake := &fakeStreamClient{
-		message: &chatbot.BotCallbackDataModel{
-			MsgId:            "m-stream",
-			Msgtype:          "text",
-			SenderStaffId:    "u1",
-			SenderNick:       "Actor",
-			ConversationId:   "c1",
-			ConversationType: "1",
-			SessionWebhook:   "https://oapi.dingtalk.com/robot/sendBySession?session=secret",
-			Text:             chatbot.BotCallbackDataTextModel{Content: "/start JARVIS-IM-REAL-E2E-1"},
-		},
+		data: `{
+  "msgId": "m-stream",
+  "msgtype": "text",
+  "senderStaffId": "u1",
+  "senderNick": "Actor",
+  "conversationId": "c1",
+  "conversationType": "1",
+  "sessionWebhook": "https://oapi.dingtalk.com/robot/sendBySession?session=secret",
+  "text": {"content": "/start JARVIS-IM-REAL-E2E-1"}
+}`,
 		afterMessage: cancel,
 	}
 	provider.newStreamClient = func(string, string) streamClient { return fake }
@@ -208,13 +209,64 @@ func TestStreamRunEmitsNormalizedEvent(t *testing.T) {
 	}
 }
 
+func TestStreamRunPreservesDownloadCodeRobotCode(t *testing.T) {
+	provider, err := New(Config{
+		ConnectorID:  "main",
+		ClientID:     "client-id",
+		ClientSecret: "client-secret",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	fake := &fakeStreamClient{
+		data: `{
+  "msgId": "m-stream-picture",
+  "msgtype": "picture",
+  "robotCode": "robot-1",
+  "senderStaffId": "u1",
+  "conversationId": "c1",
+  "conversationType": "2",
+  "content": {"downloadCode": "download-code", "fileName": "image.png"}
+}`,
+		afterMessage: cancel,
+	}
+	provider.newStreamClient = func(string, string) streamClient { return fake }
+
+	var events []uvim.Event
+	err = provider.Run(ctx, uvim.EventSinkFunc(func(_ context.Context, event uvim.Event) error {
+		events = append(events, event)
+		return nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want 1", len(events))
+	}
+	resources := events[0].Message.Resources
+	if len(resources) != 1 {
+		t.Fatalf("resources = %+v", resources)
+	}
+	if resources[0].Kind != uvim.ElementImage || resources[0].Key != "download-code" || resources[0].Name != "image.png" {
+		t.Fatalf("resource = %+v", resources[0])
+	}
+	if resources[0].Private["robot_code"] != "robot-1" {
+		t.Fatalf("private metadata = %+v", resources[0].Private)
+	}
+}
+
 type fakeStreamClient struct {
-	handler      chatbot.IChatBotMessageHandler
-	message      *chatbot.BotCallbackDataModel
+	handler      handler.IFrameHandler
+	data         string
 	afterMessage func()
 }
 
-func (f *fakeStreamClient) RegisterChatBotCallbackRouter(handler chatbot.IChatBotMessageHandler) {
+func (f *fakeStreamClient) RegisterCallbackRouter(topic string, handler handler.IFrameHandler) {
+	if topic != payload.BotMessageCallbackTopic {
+		return
+	}
 	f.handler = handler
 }
 
@@ -222,7 +274,13 @@ func (f *fakeStreamClient) Start(ctx context.Context) error {
 	if f.handler == nil {
 		return fmt.Errorf("chatbot handler was not registered")
 	}
-	if _, err := f.handler(ctx, f.message); err != nil {
+	_, err := f.handler(ctx, &payload.DataFrame{
+		Headers: payload.DataFrameHeader{
+			payload.DataFrameHeaderKTopic: payload.BotMessageCallbackTopic,
+		},
+		Data: f.data,
+	})
+	if err != nil {
 		return err
 	}
 	if f.afterMessage != nil {

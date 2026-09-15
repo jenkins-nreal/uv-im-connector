@@ -13,12 +13,13 @@ import (
 
 	uvim "github.com/hengshi/uv-im-connector"
 	"github.com/hengshi/uv-im-connector/providers/httpchannel"
-	"github.com/open-dingtalk/dingtalk-stream-sdk-go/chatbot"
 	streamsdk "github.com/open-dingtalk/dingtalk-stream-sdk-go/client"
+	"github.com/open-dingtalk/dingtalk-stream-sdk-go/handler"
+	"github.com/open-dingtalk/dingtalk-stream-sdk-go/payload"
 )
 
 type streamClient interface {
-	RegisterChatBotCallbackRouter(chatbot.IChatBotMessageHandler)
+	RegisterCallbackRouter(string, handler.IFrameHandler)
 	Start(context.Context) error
 	Close()
 }
@@ -62,12 +63,11 @@ func (p *Provider) Run(ctx context.Context, sink uvim.EventSink) error {
 	}
 
 	client := p.newStreamClient(p.config.ClientID, p.config.ClientSecret)
-	client.RegisterChatBotCallbackRouter(func(handlerCtx context.Context, data *chatbot.BotCallbackDataModel) ([]byte, error) {
-		raw, err := json.Marshal(data)
-		if err != nil {
-			return nil, fmt.Errorf("dingtalk stream: encode callback: %w", err)
+	client.RegisterCallbackRouter(payload.BotMessageCallbackTopic, func(handlerCtx context.Context, df *payload.DataFrame) (*payload.DataFrameResponse, error) {
+		if df == nil {
+			return nil, fmt.Errorf("dingtalk stream: empty callback frame")
 		}
-		event, ok, err := Decode(raw, httpchannel.Config{
+		event, ok, err := Decode([]byte(df.Data), httpchannel.Config{
 			ProviderID:  p.ID(),
 			ConnectorID: p.ConnectorID(),
 			BaseURL:     p.config.BaseURL,
@@ -76,13 +76,13 @@ func (p *Provider) Run(ctx context.Context, sink uvim.EventSink) error {
 			return nil, fmt.Errorf("dingtalk stream: decode callback: %w", err)
 		}
 		if !ok {
-			return nil, nil
+			return payload.NewSuccessDataFrameResponse(), nil
 		}
 		if err := sink.Emit(handlerCtx, event); err != nil {
 			return nil, fmt.Errorf("dingtalk stream: emit callback: %w", err)
 		}
 		p.setState("event")
-		return nil, nil
+		return payload.NewSuccessDataFrameResponse(), nil
 	})
 
 	p.setState("connecting")
