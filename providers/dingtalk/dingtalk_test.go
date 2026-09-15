@@ -12,6 +12,7 @@ import (
 
 	uvim "github.com/hengshi/uv-im-connector"
 	"github.com/hengshi/uv-im-connector/providers/httpchannel"
+	"github.com/hengshi/uv-im-connector/server"
 	"github.com/open-dingtalk/dingtalk-stream-sdk-go/handler"
 	"github.com/open-dingtalk/dingtalk-stream-sdk-go/payload"
 )
@@ -254,6 +255,110 @@ func TestStreamRunPreservesDownloadCodeRobotCode(t *testing.T) {
 	}
 	if resources[0].Private["robot_code"] != "robot-1" {
 		t.Fatalf("private metadata = %+v", resources[0].Private)
+	}
+}
+
+func TestStreamRunDownloadsDownloadCodeThroughHub(t *testing.T) {
+	var sawDownloadRequest bool
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1.0/oauth2/accessToken":
+			var body map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body["appKey"] != "client-id" || body["appSecret"] != "client-secret" {
+				t.Fatalf("token body = %+v", body)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{"accessToken": "access-token"})
+		case "/v1.0/robot/messageFiles/download":
+			sawDownloadRequest = true
+			if got := r.Header.Get("x-acs-dingtalk-access-token"); got != "access-token" {
+				t.Fatalf("download token = %q", got)
+			}
+			var body map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body["robotCode"] != "robot-1" || body["downloadCode"] != "download-code" {
+				t.Fatalf("download body = %+v", body)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{"downloadUrl": apiURL(r) + "/file"})
+		case "/file":
+			_, _ = io.WriteString(w, "hub file bytes")
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer api.Close()
+
+	provider, err := New(Config{
+		ConnectorID:  "main",
+		BaseURL:      api.URL,
+		ClientID:     "client-id",
+		ClientSecret: "client-secret",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fake := &fakeStreamClient{
+		data: `{
+  "msgId": "m-stream-picture",
+  "msgtype": "picture",
+  "robotCode": "robot-1",
+  "senderStaffId": "u1",
+  "conversationId": "c1",
+  "conversationType": "2",
+  "content": {"downloadCode": "download-code", "fileName": "image.png"}
+}`,
+		afterMessage: cancel,
+	}
+	provider.newStreamClient = func(string, string) streamClient { return fake }
+
+	store := &uvim.ResourceStore{Dir: t.TempDir()}
+	log, err := uvim.NewEventLog(t.TempDir() + "/events.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub := server.NewHub(uvim.NewProviderRegistry(provider), log, store)
+	if err := provider.Run(ctx, hub); err != nil {
+		t.Fatal(err)
+	}
+	events, err := log.ReadAfter(context.Background(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want 1", len(events))
+	}
+	if !sawDownloadRequest {
+		t.Fatal("Hub did not trigger the DingTalk downloadCode exchange")
+	}
+	resources := events[0].Message.Resources
+	if len(resources) != 1 {
+		t.Fatalf("resources = %+v", resources)
+	}
+	ref := resources[0]
+	if ref.Kind != uvim.ElementImage || ref.Name != "image.png" || ref.InternalURL == "" || ref.Error != "" {
+		t.Fatalf("persisted resource = %+v", ref)
+	}
+	if ref.Key != "" || ref.URL != "" || ref.Private != nil {
+		t.Fatalf("persisted resource was not sanitized: %+v", ref)
+	}
+	file, _, err := store.Open(ref.InternalURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	data, err := io.ReadAll(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "hub file bytes" {
+		t.Fatalf("downloaded body = %q", data)
 	}
 }
 

@@ -43,14 +43,15 @@ func New(config Config) (*Provider, error) {
 		Send:              Send,
 		ParseSendResponse: ParseSendResponse,
 		Capabilities: uvim.Capabilities{
-			Inbound:        true,
-			Outbound:       true,
-			DirectMessage:  true,
-			GroupMessage:   true,
-			ReplyMessage:   true,
-			ProactiveGroup: true,
-			TargetKinds:    []string{uvim.TargetUser, uvim.TargetGroup},
-			ChannelTypes:   []string{uvim.ChannelDirect, uvim.ChannelGroup},
+			Inbound:          true,
+			Outbound:         true,
+			DirectMessage:    true,
+			GroupMessage:     true,
+			ReplyMessage:     true,
+			ProactiveGroup:   true,
+			DownloadResource: true,
+			TargetKinds:      []string{uvim.TargetUser, uvim.TargetGroup},
+			ChannelTypes:     []string{uvim.ChannelDirect, uvim.ChannelGroup},
 		},
 	})
 	if err != nil {
