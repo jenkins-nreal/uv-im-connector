@@ -2,7 +2,11 @@ package dingtalk
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -47,6 +51,112 @@ func TestNewRejectsPartialStreamCredentials(t *testing.T) {
 			t.Fatal("New() accepted a partial DingTalk Stream credential pair")
 		}
 	}
+}
+
+func TestDecodeContentRichTextAndDownloadCodes(t *testing.T) {
+	event, ok, err := Decode([]byte(`{
+  "msgId": "m-rich",
+  "msgtype": "richText",
+  "robotCode": "robot-1",
+  "senderStaffId": "u1",
+  "senderNick": "Ada",
+  "conversationId": "g1",
+  "conversationType": "2",
+  "content": {
+    "richText": [
+      {"text": "hello"},
+      {"type": "picture", "downloadCode": "pic-code", "fileName": "pic.png"},
+      {"text": "world"},
+      {"type": "file", "downloadCode": "file-code", "fileName": "report.pdf", "fileSize": 12}
+    ]
+  }
+}`), httpchannel.Config{ConnectorID: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("decode ok = false")
+	}
+	if event.Message.Text != "hello\nworld" {
+		t.Fatalf("text = %q", event.Message.Text)
+	}
+	if len(event.Message.Resources) != 2 {
+		t.Fatalf("resources = %+v", event.Message.Resources)
+	}
+	if event.Message.Resources[0].Kind != uvim.ElementImage || event.Message.Resources[0].Key != "pic-code" {
+		t.Fatalf("image resource = %+v", event.Message.Resources[0])
+	}
+	if event.Message.Resources[1].Kind != uvim.ElementFile || event.Message.Resources[1].Key != "file-code" || event.Message.Resources[1].SizeBytes != 12 {
+		t.Fatalf("file resource = %+v", event.Message.Resources[1])
+	}
+	if event.Message.Resources[0].Private["robot_code"] != "robot-1" {
+		t.Fatalf("private metadata = %+v", event.Message.Resources[0].Private)
+	}
+}
+
+func TestDownloadExchangesDownloadCodeForTemporaryURL(t *testing.T) {
+	var sawTokenRequest, sawDownloadRequest bool
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1.0/oauth2/accessToken":
+			sawTokenRequest = true
+			var body map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body["appKey"] != "client-id" || body["appSecret"] != "client-secret" {
+				t.Fatalf("token body = %+v", body)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{"accessToken": "access-token"})
+		case "/v1.0/robot/messageFiles/download":
+			sawDownloadRequest = true
+			if got := r.Header.Get("x-acs-dingtalk-access-token"); got != "access-token" {
+				t.Fatalf("download token = %q", got)
+			}
+			var body map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body["robotCode"] != "robot-1" || body["downloadCode"] != "download-code" {
+				t.Fatalf("download body = %+v", body)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{"downloadUrl": apiURL(r) + "/file"})
+		case "/file":
+			_, _ = io.WriteString(w, "file bytes")
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer api.Close()
+
+	provider, err := New(Config{BaseURL: api.URL, ClientID: "client-id", ClientSecret: "client-secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, err := provider.Download(context.Background(), uvim.ResourceDownloadRequest{
+		Dir: t.TempDir(),
+		Resource: uvim.ResourceRef{
+			Provider: "dingtalk",
+			Kind:     uvim.ElementImage,
+			Name:     "pic.png",
+			Key:      "download-code",
+			URL:      api.URL + "/legacy-file",
+			Private:  map[string]string{"robot_code": "robot-1"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sawTokenRequest || !sawDownloadRequest {
+		t.Fatalf("token=%t download=%t", sawTokenRequest, sawDownloadRequest)
+	}
+	if ref.InternalURL == "" || ref.Key != "" {
+		t.Fatalf("downloaded ref = %+v", ref)
+	}
+}
+
+func apiURL(r *http.Request) string {
+	return "http://" + r.Host
 }
 
 func TestStreamRunEmitsNormalizedEvent(t *testing.T) {

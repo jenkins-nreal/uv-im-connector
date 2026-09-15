@@ -361,7 +361,7 @@ When a send fails, `POST /v1/message.create` keeps the compatible HTTP `502` and
 
 The connector imposes no additional attachment size limits on storage, downloads, HTTP uploads, or outbound sends. Size policy is enforced by the IM provider or mail server.
 
-Group and direct attachments share the same download path. WeCom includes quoted attachments, and Lark includes images and videos in rich-text posts plus downloadable attachments from quoted parent messages. Lark `folder` messages are recognized as file resources; `merge_forward` (including child messages) and `interactive` cards provide text/summary context only and do not expose child resources. See [Resources](docs/guide/resources.md).
+Group and direct attachments share the same download path. WeCom includes quoted attachments and quoted text context, DingTalk exchanges inbound `downloadCode` values for temporary file URLs when Stream credentials are configured, and Lark includes images and videos in rich-text posts plus downloadable attachments from quoted parent messages. Lark `folder` messages are recognized as file resources; `merge_forward` (including child messages) and `interactive` cards provide text/summary context only and do not expose child resources. See [Resources](docs/guide/resources.md).
 
 Inbound files, images, audio, and video are normalized as sanitized `ResourceRef` values:
 

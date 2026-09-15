@@ -4,7 +4,7 @@ Inbound files, images, audio, and video are normalized into `ResourceRef` values
 
 The connector imposes no additional attachment size limit on inbound downloads, local storage, HTTP uploads, or outbound delivery. The IM provider or mail server enforces its size policy.
 
-Group and direct attachments use the same download path, before event persistence. WeCom extracts files, images, and videos from the message and its `quote`, including a group-file quote sent with an @mention of the bot. Lark extracts images and videos from rich-text posts. WeCom AI Bot callbacks have `addressed=true`; Lark group messages still derive that flag from bot mentions. The connector can only process events delivered by the platform; caller applications perform content recognition.
+Group and direct attachments use the same download path, before event persistence. WeCom extracts files, images, videos, and quoted text from the message and its `quote`, including a group-file quote sent with an @mention of the bot. DingTalk exchanges inbound `downloadCode` values for temporary file URLs when Stream credentials are configured. Lark extracts images and videos from rich-text posts. WeCom AI Bot callbacks have `addressed=true`; Lark group messages still derive that flag from bot mentions. The connector can only process events delivered by the platform; caller applications perform content recognition.
 
 ## Public Shape
 
