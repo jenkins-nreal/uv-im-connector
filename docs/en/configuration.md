@@ -18,8 +18,8 @@ The standalone binary reads `UV_IM_*` variables.
 | `UV_LARK_APP_ID` | Lark app ID. |
 | `UV_LARK_APP_SECRET` | Lark app secret. |
 | `UV_LARK_REGION` | `feishu` or `lark`. Defaults to `feishu`. |
-| `UV_LARK_BOT_OPEN_ID` | Optional bot open ID for mention stripping. |
-| `UV_LARK_BOT_UNION_ID` | Optional bot union ID for mention stripping. |
+| `UV_LARK_BOT_OPEN_ID` | Optional bot open ID for group mention admission (`addressed`) and mention stripping. An explicit value bypasses identity discovery. |
+| `UV_LARK_BOT_UNION_ID` | Optional bot union ID for group mention admission and mention stripping. When both IDs are empty, startup discovers the bot open ID; lookup failure stops startup. |
 | `UV_LARK_BASE_URL` | Optional OpenAPI base URL override. |
 | `UV_LARK_CALLBACK_BASE_URL` | Optional callback WebSocket endpoint base URL override. |
 | `UV_DINGTALK_CLIENT_ID` | DingTalk application Client ID. Must be configured with `UV_DINGTALK_CLIENT_SECRET`; enables Stream ingress without a public callback. |
@@ -36,6 +36,10 @@ The standalone binary reads `UV_IM_*` variables.
 | `UV_MAIL_WEBHOOK_SECRET` | Mail inbound webhook secret. |
 
 Provider credentials are exclusive deployment identity. Production, E2E, development, and temporary debug workers must not share the same provider credential set.
+
+Lark identity discovery calls `GET /open-apis/bot/v3/info` with the existing application credentials before opening the WebSocket. Discovery and its token request share a 15-second startup deadline; a shorter caller context or HTTPClient timeout still applies. Success logs record the identity source and bot ID; failure logs retain safe stage, error-code or transport diagnostics.
+
+Upgrade note: with both bot IDs empty, this API is a new startup prerequisite. Unknown identity does not fall back to receiving group messages. Under the standalone binary's current shared lifecycle, any provider failure stops the HTTP API and other providers in the same process; the service manager may repeatedly restart it. This path has no internal retry. To bypass identity discovery, set `UV_LARK_BOT_OPEN_ID` for the current application (or a verified union ID) and restart. This does not bypass credential validation or other startup APIs.
 
 After acknowledging an inbound callback, Lark makes best-effort cached lookups for sender and group-chat names with the existing application credentials. The application needs OpenAPI permission to read basic user and chat information. Permission or API errors omit names. Lookups have no default timeout; an unresponsive request needs caller-context cancellation or an explicitly configured HTTPClient timeout. The WeCom AI Bot callback and Bot secret provide IDs but no contact/chat-name lookup, so deployments that need names should use the explicit maps above; without them, provider-native IDs remain the fallback.
 

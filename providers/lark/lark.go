@@ -768,7 +768,7 @@ func (p *Provider) tenantAccessToken(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("decode tenant_access_token response: %w", err)
 	}
 	if decoded.Code != 0 || decoded.TenantAccessToken == "" {
-		return "", fmt.Errorf("lark tenant_access_token: code=%d msg=%q", decoded.Code, decoded.Msg)
+		return "", uvim.NewProviderSendLogError(fmt.Sprintf("lark tenant_access_token: code=%d", decoded.Code), fmt.Errorf("lark tenant_access_token: code=%d msg=%q", decoded.Code, decoded.Msg))
 	}
 	p.tokenMu.Lock()
 	p.token = decoded.TenantAccessToken

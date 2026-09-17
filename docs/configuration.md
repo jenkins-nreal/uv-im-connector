@@ -18,8 +18,8 @@
 | `UV_LARK_APP_ID` | Lark app ID。 |
 | `UV_LARK_APP_SECRET` | Lark app secret。 |
 | `UV_LARK_REGION` | `feishu` 或 `lark`，默认 `feishu`。 |
-| `UV_LARK_BOT_OPEN_ID` | 可选 bot open ID，用于 mention stripping。 |
-| `UV_LARK_BOT_UNION_ID` | 可选 bot union ID，用于 mention stripping。 |
+| `UV_LARK_BOT_OPEN_ID` | 可选 bot open ID，用于识别群消息是否 @ 本机器人（`addressed`）及移除 mention 文本。显式配置会跳过身份自动查询。 |
+| `UV_LARK_BOT_UNION_ID` | 可选 bot union ID，同样用于群 @ 识别及移除 mention 文本。两个 ID 都留空时，启动时自动查询 bot open ID；查询失败会停止启动。 |
 | `UV_LARK_BASE_URL` | 可选 OpenAPI base URL override。 |
 | `UV_LARK_CALLBACK_BASE_URL` | 可选 callback WebSocket endpoint base URL override。 |
 | `UV_DINGTALK_CLIENT_ID` | DingTalk 应用 Client ID。必须与 `UV_DINGTALK_CLIENT_SECRET` 同时配置；配置后使用 Stream 模式接收入站消息，不需要公网 callback。 |
@@ -36,6 +36,10 @@
 | `UV_MAIL_WEBHOOK_SECRET` | Mail inbound webhook secret。 |
 
 Provider credentials 是独占 deployment identity。Production、E2E、development 和临时 debug worker 不应共用同一套 provider credentials。
+
+Lark 身份自动查询通过现有应用凭据调用 `GET /open-apis/bot/v3/info`，在打开 WebSocket 前完成；身份查询及所需 token 请求共用 15 秒启动时限（调用方更短的 context 或 HTTPClient 超时仍生效）。成功日志记录身份来源和 bot ID，失败日志保留安全的阶段、错误码或传输原因。
+
+升级注意：两个 bot ID 都留空时，该 API 是新的启动前置依赖。身份无法确认时不会降级接收群消息；按当前独立二进制的共享生命周期，任一 provider 失败会停止同进程的 HTTP API 和其他 provider，服务管理器可能持续重启。此路径没有内部重试。若需跳过身份查询，可设置与当前应用对应的 `UV_LARK_BOT_OPEN_ID`（或已核实的 union ID），再重启服务；这不会绕过应用凭据校验或其他启动 API。
 
 Lark 入站事件会在确认回调后，使用现有应用凭据对发送人和群聊名称做可失败的缓存查询。应用需要具备读取用户基本信息和群聊信息的 OpenAPI 权限；权限缺失或 API 返回错误时，事件省略名称；查询没有默认超时，无响应的请求需由调用方 context 或显式 HTTPClient 超时取消。企业微信 AI Bot 长连接回调及其 Bot secret 不提供通讯录或群聊名称查询能力，因此需要名称时使用上面的显式映射；未配置时保留 provider-native ID。
 

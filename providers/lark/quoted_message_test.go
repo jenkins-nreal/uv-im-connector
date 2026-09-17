@@ -1,9 +1,11 @@
 package lark
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -131,7 +133,9 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 			if strings.HasPrefix(scenario, "auto-") {
 				botID = ""
 			}
-			provider, err := New(Config{AppID: "app", AppSecret: "secret", BotOpenID: botID, BaseURL: api.URL, CallbackBaseURL: api.URL, ResourceStore: store})
+			var identityLogs bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&identityLogs, nil))
+			provider, err := New(Config{Logger: logger, AppID: "app", AppSecret: "secret", BotOpenID: botID, BaseURL: api.URL, CallbackBaseURL: api.URL, ResourceStore: store})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -143,6 +147,13 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancel()
 			_ = provider.Run(ctx, hub) // Peer disconnect drains the queued event.
+			source := "configured"
+			if botID == "" {
+				source = "discovered"
+			}
+			if !strings.Contains(identityLogs.String(), "source="+source) || !strings.Contains(identityLogs.String(), "open_id=bot") {
+				t.Fatalf("identity diagnostic missing: %s", identityLogs.String())
+			}
 			events, err := log.ReadAfter(t.Context(), 0)
 			if err != nil || len(events) != 1 {
 				t.Fatalf("events=%+v err=%v", events, err)
