@@ -93,7 +93,7 @@ func TestWebSocketHandshakeCancellation(t *testing.T) {
 				if entry == "wecom" {
 					p, err = wecom.New(wecom.Config{BotID: "bot", Secret: "secret", WSURL: strings.Replace(api.URL, "http", "ws", 1)})
 				} else {
-					p, err = lark.New(lark.Config{AppID: "app", AppSecret: "secret", CallbackBaseURL: api.URL})
+					p, err = lark.New(lark.Config{AppID: "app", AppSecret: "secret", BotOpenID: "bot", CallbackBaseURL: api.URL})
 				}
 				if err != nil {
 					t.Fatal(err)

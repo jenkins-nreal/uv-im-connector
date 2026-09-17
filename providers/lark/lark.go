@@ -151,6 +151,11 @@ func (p *Provider) Health(context.Context) uvim.Health {
 }
 
 func (p *Provider) Run(ctx context.Context, sink uvim.EventSink) error {
+	decoder, err := p.decoderConfig(ctx)
+	if err != nil {
+		p.setState("error")
+		return err
+	}
 	endpoint, err := p.endpoint(ctx)
 	if err != nil {
 		p.setState("error")
@@ -181,7 +186,7 @@ func (p *Provider) Run(ctx context.Context, sink uvim.EventSink) error {
 	workers.Add(2)
 	go func(incoming chan<- uvim.Event, readErr chan<- error) {
 		defer workers.Done()
-		readErr <- p.readEvents(transportCtx, conn, &writeMu, endpoint.ServiceID, incoming)
+		readErr <- p.readEvents(transportCtx, conn, &writeMu, endpoint.ServiceID, decoder, incoming)
 	}(incoming, readErr)
 	go func(events <-chan uvim.Event) {
 		defer workers.Done()
@@ -256,7 +261,7 @@ func (p *Provider) Run(ctx context.Context, sink uvim.EventSink) error {
 
 // readEvents acknowledges frames without waiting for display-name lookups or
 // attachment downloads. Run retains received events until serial delivery ends.
-func (p *Provider) readEvents(ctx context.Context, conn WSConn, writeMu *sync.Mutex, serviceID int32, events chan<- uvim.Event) error {
+func (p *Provider) readEvents(ctx context.Context, conn WSConn, writeMu *sync.Mutex, serviceID int32, decoder DecoderConfig, events chan<- uvim.Event) error {
 	assembler := newChunkAssembler(p.config.ChunkTTL, p.config.Now)
 	for {
 		if err := conn.SetReadDeadline(uvim.OptionalDeadline(p.now(), p.config.ReadDeadline)); err != nil {
@@ -302,12 +307,7 @@ func (p *Provider) readEvents(ctx context.Context, conn WSConn, writeMu *sync.Mu
 			}
 			payload = assembled
 		}
-		event, ok, decodeErr := DecodePayload(payload, DecoderConfig{
-			AppID:      p.config.AppID,
-			BotOpenID:  p.config.BotOpenID,
-			BotUnionID: p.config.BotUnionID,
-			Connector:  p.ConnectorID(),
-		})
+		event, ok, decodeErr := DecodePayload(payload, decoder)
 		if decodeErr != nil {
 			p.config.Logger.Warn("lark payload decode failed", "err", decodeErr.Error(), "payload_len", len(payload))
 			if err := p.writeFrame(writeMu, conn, newAckFrame(inbound, true)); err != nil {

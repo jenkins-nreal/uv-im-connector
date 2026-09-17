@@ -17,7 +17,7 @@ import (
 
 // Runs the real WebSocket adapter and Hub with a local Feishu API stub.
 func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
-	for _, scenario := range []string{"file", "folder", "folder-failed", "text", "interactive", "share-chat", "share-user", "system", "merge-forward", "denied", "deleted", "wrong-chat", "wrong-message", "download-failed", "unaddressed"} {
+	for _, scenario := range []string{"auto-file", "auto-other", "file", "folder", "folder-failed", "text", "interactive", "share-chat", "share-user", "system", "merge-forward", "denied", "deleted", "wrong-chat", "wrong-message", "download-failed", "unaddressed"} {
 		t.Run(scenario, func(t *testing.T) {
 			var api *httptest.Server
 			api = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -32,6 +32,9 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 					}
 					defer conn.Close()
 					mentions := []any{map[string]any{"key": "@bot", "id": map[string]any{"open_id": "bot"}}}
+					if scenario == "auto-other" {
+						mentions = []any{map[string]any{"key": "@bot", "id": map[string]any{"open_id": "other-bot"}}}
+					}
 					if scenario == "unaddressed" {
 						mentions = nil
 					}
@@ -49,10 +52,15 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 					}
 				case "/open-apis/auth/v3/tenant_access_token/internal":
 					json.NewEncoder(w).Encode(map[string]any{"code": 0, "tenant_access_token": "token", "expire": 3600})
+				case "/open-apis/bot/v3/info":
+					if req.Header.Get("Authorization") != "Bearer token" {
+						t.Error("missing bot identity")
+					}
+					json.NewEncoder(w).Encode(map[string]any{"code": 0, "bot": map[string]any{"open_id": "bot"}})
 				case "/open-apis/im/v1/chats/chat":
 					json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"name": "group"}})
 				case "/open-apis/im/v1/messages/parent":
-					if scenario == "unaddressed" {
+					if scenario == "unaddressed" || scenario == "auto-other" {
 						t.Error("fetched quote for an unaddressed group message")
 					}
 					if req.Header.Get("Authorization") != "Bearer token" {
@@ -99,7 +107,7 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 					}
 					json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"items": items}})
 				case "/open-apis/im/v1/messages/parent/resources/log-key":
-					if scenario != "file" && scenario != "folder" && scenario != "folder-failed" && scenario != "download-failed" {
+					if scenario != "auto-file" && scenario != "file" && scenario != "folder" && scenario != "folder-failed" && scenario != "download-failed" {
 						t.Error("downloaded an unverified quote")
 					}
 					if scenario == "folder-failed" {
@@ -119,7 +127,11 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 			}))
 			defer api.Close()
 			store := &uvim.ResourceStore{Dir: t.TempDir()}
-			provider, err := New(Config{AppID: "app", AppSecret: "secret", BotOpenID: "bot", BaseURL: api.URL, CallbackBaseURL: api.URL, ResourceStore: store})
+			botID := "bot"
+			if strings.HasPrefix(scenario, "auto-") {
+				botID = ""
+			}
+			provider, err := New(Config{AppID: "app", AppSecret: "secret", BotOpenID: botID, BaseURL: api.URL, CallbackBaseURL: api.URL, ResourceStore: store})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -139,7 +151,10 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 			if event.Message.Text != "analyze this log" || event.Referrer.MessageID != "current" || event.Referrer.ParentMessageID != "parent" {
 				t.Fatalf("changed instruction/reply authority: %+v", event)
 			}
-			if scenario == "unaddressed" {
+			if scenario == "unaddressed" || scenario == "auto-other" {
+				if event.Addressed {
+					t.Fatal("another mention admitted as bot")
+				}
 				if len(event.Message.Resources) != 0 {
 					t.Fatal("unexpected quote resources")
 				}
@@ -147,6 +162,9 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 			}
 			if (scenario == "interactive" || scenario == "merge-forward") && len(event.Message.Resources) != 1 {
 				t.Fatalf("child resources leaked into event: %+v", event.Message.Resources)
+			}
+			if !event.Addressed {
+				t.Fatal("bot mention was not recognized")
 			}
 			if len(event.Message.Resources) == 0 {
 				t.Fatal("quoted message context missing from emitted resources")
@@ -173,16 +191,16 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 				t.Fatalf("folder context missing: %q", contents)
 			}
 			switch scenario {
-			case "file", "folder", "text", "interactive", "share-chat", "share-user", "system", "merge-forward":
+			case "auto-file", "file", "folder", "text", "interactive", "share-chat", "share-user", "system", "merge-forward":
 				if !strings.Contains(contents, "parent") || len(failures) != 0 {
 					t.Fatalf("contents=%q failures=%v", contents, failures)
 				}
-				if scenario == "file" || scenario == "folder" || scenario == "text" {
+				if scenario == "auto-file" || scenario == "file" || scenario == "folder" || scenario == "text" {
 					if !strings.Contains(contents, "fatal: tracking failed") {
 						t.Fatal("message content missing")
 					}
 				}
-				if scenario == "file" && !strings.Contains(contents, "device.log") {
+				if (scenario == "auto-file" || scenario == "file") && !strings.Contains(contents, "device.log") {
 					t.Fatal("log attachment missing")
 				}
 				if scenario == "interactive" && !strings.Contains(contents, "Interactive card") {

@@ -34,6 +34,11 @@ jarvis-box owns:
 
 ### Quoted Lark messages
 
+When no `UV_LARK_BOT_OPEN_ID` or `UV_LARK_BOT_UNION_ID` is configured,
+the Lark connector resolves its own open ID through the bot-info API before
+opening its WebSocket. Identity lookup failures stop provider startup with an
+explicit error; they must not silently turn bot mentions into unaddressed events. Explicit identity settings still take precedence.
+
 For an addressed Lark message with a parent message ID, the connector reads that
 one parent with its bot identity and verifies the returned message and chat IDs.
 It exposes the quoted text and source ID as a `quoted-message.txt` resource, and
